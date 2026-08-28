@@ -1,0 +1,30 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+# Virtual environments
+.venv
+# Node sidecar for the Copilot SDK backend
+# Measurement artefacts
+.zen-cache/
+runs/
+**/out/**/
+ref/
+.ruff_cache/
+# Generated next to the prompt they describe. The example ones are committed on
+# purpose (see examples/), everything else is output.
+*.probes.json
+*.report.md
+!examples/*.probes.json
+!examples/*.report.md
+!examples/out/*.report.md
+# Pre-rebuild tree, kept only because this repo has no history yet
+.attic/
+AGENTS.md
+*.log
+/video
+.vscode/settings.json
+docs/f150.png
