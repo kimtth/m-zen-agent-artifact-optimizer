@@ -3,80 +3,139 @@
 <img src="docs/zen-logo.svg" alt="Zen logo" width="112" align="left" />
 
 <p><strong>Less input. Less output. More clarity.</strong></p>
-<p>Zen reduces the instructions an AI agent reads and the output a person must read. It optimizes one GitHub Copilot customization artifact without a hand-written dataset.</p>
+<p>Zen rewrites GitHub Copilot instructions more compactly, saves a reviewable draft, and checks for meaningful differences. No user-supplied labeled dataset is required.</p>
 
 <br clear="left" />
 
-Accepts a candidate only when it:
+## What Zen does
 
-1. introduces no critical behavior failure;
-2. preserves behavior pass count;
-3. preserves reader understanding;
-4. does not increase artifact, output, or understanding tokens; and
-5. reduces combined artifact and median output tokens by at least 3%.
+Zen optimizes **one Markdown instruction body** using tool-free Copilot sessions.
 
-The source artifact is never modified.
+- **Rewrite the meaning, not just the lines.** The default semantic engine reads
+  the whole body and consolidates repetition while preserving actions, constraints,
+  conditions, exceptions, priorities, language, and required public output formats.
+- **Save before judging.** A usable draft is written before evaluation. Later
+  evaluation errors or budget exhaustion do not discard it.
+- **Compare meaning.** Direct instruction review and small task-based comparisons
+  look for important omissions, contradictions, and behavioral regressions, not
+  identical wording or mandatory quotations.
+- **Bound the work.** A small call budget and limited correction rounds replace
+  open-ended deletion/search as the default.
+- **Keep the source unchanged.** Metadata and source bytes are protected; generated
+  drafts are separate files, never automatically applied.
 
-## What is different
-
-- **No hard-coded behavioral rule set.** A model derives atomic, source-grounded obligations from each artifact. Evaluators consume that generated contract.
-- **Multilingual.** Contracts, synthetic inquiries, criteria, and reader questions stay in the artifact's language. Unicode writing-system checks reject accidental translation.
-- **Dataset-free.** Zen generates 80 cases, validates and deduplicates them, retains 50, and splits by scenario family into 30 train, 10 validation, and 10 sealed holdout cases.
-- **Quality before size.** GEPA receives behavior, understanding, and efficiency feedback. Shorter incorrect candidates cannot outrank correct candidates.
+Zen supports AGENTS.md, copilot-instructions.md, SKILL.md, and files ending in
+`.instructions.md`, `.prompt.md`, or `.agent.md`. YAML frontmatter, UTF-8 BOM, and
+line-ending convention are preserved.
 
 ## Install and verify
 
+Requires Python 3.13 or later, uv, and a signed-in Copilot CLI account.
+
 ```powershell
 uv sync
-python -m copilot download-runtime
-uv run pytest
+uv run python -m copilot download-runtime
 uv run zen selfcheck
 ```
 
-The Copilot SDK uses the signed-in Copilot CLI account.
-
-## Optimize
+## Use
 
 ```powershell
-uv run zen --target-model gpt-5-mini --strong-model gpt-5 --budget 600 optimize .github\copilot-instructions.md
+uv run zen detect .\examples\in\debug.agent.md
+uv run zen --budget 32 optimize .\examples\in\debug.agent.md --output-dir .\examples\out --quick
 ```
 
-Useful commands:
+Global options such as `--budget` precede `optimize`. Default model roles are:
+
+- Target: `gpt-5.6-terra` (`--target-model`).
+- Strong: `gpt-5.6-sol` for rewriting and semantic judgments (`--strong-model`).
+- Generator: `gpt-5.6-luna` for synthetic cases (`--generator-model`).
+
+| Optimize option | Effect |
+| --- | --- |
+| `--engine semantic` | Whole-body semantic rewriting and bounded comparison; the default. |
+| `--engine gepa` | Opt into GEPA search and its separate evaluation policy. |
+| `--quick` | Smaller case set for an illustrative comparison. |
+| `--output-dir DIRECTORY` | Write the draft and report in this directory. |
+| `--aggressive 30%` | Request a body line cap. Semantic rewriting has no hard line cap by default. |
+| `--no-aggressive` | Disable the body line cap. |
+| `--focus task` or `--focus communication` | Edit only an explicitly marked section; outside text stays frozen. Default: `all`. |
+| `--compare-concision` | GEPA-only diagnostic control; never a selected artifact. |
+
+Focused edits require an exact `<!-- zen:task --> ... <!-- /zen:task -->` or
+`<!-- zen:communication --> ... <!-- /zen:communication -->` pair. There is no
+automatic semantic split.
+
+The budget caps application model calls, not dollars or provider tokens. If the
+remaining budget cannot complete the checks, the draft remains available with a
+review-required status. See the [CLI and runtime guide](docs/documentation.md).
+
+## Decisions and outputs
+
+The semantic engine separates **having a draft** from **having sufficient verification**.
+Harmless differences in wording, order, or length are not failures. Important missing
+instructions, incorrect added requirements, or materially worse answers require review.
+An original answer's existing defect is not automatically a candidate regression.
+
+The report identifies instruction-level differences, validation and holdout results,
+local token counts, errors, and output availability without filesystem paths.
+Locations remain in the CLI and machine-readable manifest. Successful
+verification is limited to these checks, not universal semantic equivalence.
+Incomplete checks never become a successful score.
+
+If complete evaluation flags a draft for review, a **final adjudication** compares
+the frozen source, draft, cases, and both answers to distinguish new regressions
+from shared baseline defects or evaluator mistakes. It may return **CONFIRMED**
+after explaining every flagged finding and checking each phase separately. Original
+findings remain in the report. This is model-reviewed confirmation, not independent
+or human verification. Missing evidence, provider errors, changed source/draft bytes,
+and unmet size/reduction requirements cannot be overridden.
+
+| Semantic status | Meaning |
+| --- | --- |
+| VERIFIED | Initial complete checks passed without material candidate losses. |
+| CONFIRMED | Final model review resolved the flags, or the user explicitly accepted the draft. The report identifies which. |
+| REVIEW_REQUIRED | Unresolved differences, uncertainty, missing evidence, or unmet token gates; draft retained. |
+| ERROR | No usable draft was generated. |
+
+Both VERIFIED and CONFIRMED publish an optimized copy; neither changes the source.
+For REVIEW_REQUIRED drafts, the interactive CLI asks whether to accept after showing
+the draft and report paths. **Yes sets CONFIRMED (by user)** and updates the report
+and manifest while preserving the earlier model decision, warnings and unmet gates.
+No or Enter keeps the draft unconfirmed. Without an interactive terminal, no consent
+is inferred; `--accept-draft` explicitly authorizes user confirmation for that run.
+User acceptance does not turn failed checks into passes. Changed source or draft
+files still block publication. GEPA does not support this override.
+The final step uses one call, with at most one schema retry, inside the existing budget.
+The same environment helps compare answers but does not establish independent samples.
+
+Evaluation does not demand a "why this matters" paragraph for every simple answer.
+However, an explicitly required public output format remains part of the instruction
+contract; silently deleting it is not meaning-preserving compression.
+
+Drafts remain available when verification cannot pass. If the first model call fails
+to produce a usable rewrite, Zen cannot guarantee a draft; a failure report explains
+what happened. Filesystem or invalid-input errors can prevent output creation.
+GEPA's opt-in acceptance policy is documented separately in the runtime guide.
+
+## Current limits
+
+- No tool execution, multi-turn workflow, or executable multi-file package evaluation.
+- Semantic judgments are model-based proxies, not proof of equivalence or measured human comprehension.
+- Token counts are local estimates, not billing or guaranteed future savings.
+- Fresh application calls do not establish independent provider samples.
+- Generated requirements and cases can miss behavior; acceptance is scoped to observed evidence.
+
+See the [current limitations register](UNCONFIRMED_ASSUMPTIONS.md),
+[example inputs](examples/README.md), and [full documentation](docs/documentation.md).
+
+## Development
 
 ```powershell
-uv run zen detect .github\copilot-instructions.md
+uv run pytest -q
 uv run zen selfcheck
-uv run zen --help
+uv run ruff check zen tests
 ```
 
-A completed accepted run writes:
-
-- `NAME.optimized.<suffix>` — the accepted candidate;
-- `NAME.optimize.report.md` — the concise decision and measurements;
-- `.zen-cache/runs/<run-id>/` — generated contract, frozen dataset, holdout seal, and detailed results.
-
-A rejected run writes the report and retains the source. Zen does not automatically apply any candidate.
-During processing, the CLI displays the current phase and percentage. Pass
-`--output-dir DIRECTORY` after `PATH` to place the candidate and report somewhere other
-than beside the source artifact. Add `--quick` for a low-cost illustrative run; use the
-default full profile for acceptance evidence. Add `--aggressive 80` to cap the mutable
-body at 80 lines, or `--aggressive 50%` to cap it at half of its original line count.
-Without a value, `--aggressive` defaults to 100 lines. The usual quality gate still
-applies, so Zen rejects a shorter candidate that loses behavior.
-
-## Supported artifacts
-
-- `AGENTS.md`
-- `copilot-instructions.md`
-- `*.instructions.md`
-- `*.prompt.md`
-- `*.agent.md`
-- `SKILL.md`
-
-See the consolidated [documentation](docs/documentation.md).
-
-## Real-world example
-
-The `examples` directory contains complete input artifacts and the accepted output from an
-actual quick Zen run. See [examples/README.md](examples/README.md) for the input, command,
-and recorded measurements.
+Tests cover semantic workflow mechanics and opt-in GEPA integration with scripted
+models, not universal quality, live provider reliability, or human-comprehension gains.

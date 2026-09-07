@@ -7,7 +7,8 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Protocol
 
@@ -47,6 +48,17 @@ class CallBudget:
 
 
 _CACHE_VERSION = "model-call-v1"
+_FRESH_CALLS: ContextVar[bool] = ContextVar("zen_fresh_calls", default=False)
+
+
+@contextmanager
+def fresh_calls():
+    """Bypass application response replay without changing model-visible prompts."""
+    token = _FRESH_CALLS.set(True)
+    try:
+        yield
+    finally:
+        _FRESH_CALLS.reset(token)
 
 
 class ResponseCache:
@@ -117,7 +129,7 @@ class CopilotModel:
         self.cache = cache
 
     def complete(self, system: str, user: str) -> ModelResponse:
-        slot = self.cache.slot(self.name, system, user) if self.cache else None
+        slot = self.cache.slot(self.name, system, user) if self.cache and not _FRESH_CALLS.get() else None
         if self.cache is not None and slot is not None:
             replayed = self.cache.read(slot)
             if replayed is not None:

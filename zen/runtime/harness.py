@@ -10,11 +10,36 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import dspy
+from dspy.signatures.signature import SignatureMeta
 
 from ..domain.core import EvaluationCase, RunRecord, count_tokens, write_json
 from .lm import BudgetExceeded, DSPyModel, TextModel
 
-_RUNNER_VERSION = "runner-v1"
+_RUNNER_VERSION = "runner-v3"
+
+
+class _ExactInstructionMeta(SignatureMeta):
+    @property
+    def instructions(cls) -> str:
+        # DSPy's default inspect.cleandoc changes frozen whitespace and tabs.
+        return cls.__doc__ or ""
+
+    @instructions.setter
+    def instructions(cls, instructions: str) -> None:
+        cls.__doc__ = instructions
+
+
+class _ArtifactSignature(dspy.Signature, metaclass=_ExactInstructionMeta):
+    inquiry: str = dspy.InputField()
+    context: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+    @classmethod
+    def with_instructions(cls, instructions: str):
+        # Keep the exact-text getter when GEPA creates a candidate signature.
+        return _ExactInstructionMeta(
+            "ArtifactCandidate", (cls,), {"__doc__": instructions, "__module__": __name__}
+        )
 
 
 @dataclass(frozen=True)
@@ -38,8 +63,7 @@ class ArtifactProgram(dspy.Module):
     def __init__(self, instructions: str, policy: CandidatePolicy):
         super().__init__()
         self.policy = policy
-        self.answer = dspy.Predict("inquiry, context -> answer")
-        self.answer.signature = self.answer.signature.with_instructions(instructions)
+        self.answer = dspy.Predict(_ArtifactSignature.with_instructions(instructions))
 
     def forward(self, inquiry: str, context: str) -> dspy.Prediction:
         instructions = self.answer.signature.instructions
@@ -66,6 +90,7 @@ class RunCache:
             latency_ms=int(value["latency_ms"]),
             events=tuple(value.get("events", [])),
             error=value.get("error", ""),
+            trial_id=value.get("trial_id", ""),
         )
 
     def put(self, key: str, record: RunRecord) -> None:
@@ -73,14 +98,17 @@ class RunCache:
 
 
 class Runner:
-    def __init__(self, model: TextModel, cache: RunCache):
+    def __init__(self, model: TextModel, cache: RunCache, namespace: str = ""):
         self.model = model
+        self.namespace = namespace
         self.lm = DSPyModel(model)
         self.adapter = dspy.ChatAdapter(use_json_adapter_fallback=False)
         self.cache = cache
 
-    def run(self, instructions: str, case: EvaluationCase, repetition: int = 0) -> RunRecord:
-        key = self._key(instructions, case.id, repetition)
+    def run(
+        self, instructions: str, case: EvaluationCase, repetition: int = 0, *, scope: str = ""
+    ) -> RunRecord:
+        key = self._key(instructions, case, repetition, scope)
         cached = self.cache.get(key)
         if cached is not None:
             return cached
@@ -106,15 +134,18 @@ class Runner:
             latency_ms=round((time.perf_counter() - started) * 1000),
             events=({"type": "final_message", "content": answer},) if answer else (),
             error=error,
+            trial_id=key,
         )
         self.cache.put(key, record)
         return record
 
-    def _key(self, instructions: str, case_id: str, repetition: int) -> str:
+    def _key(self, instructions: str, case: EvaluationCase, repetition: int, scope: str) -> str:
         value = json.dumps(
             {
                 "candidate": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
-                "case": case_id,
+                "case": case.to_dict(),
+                "namespace": self.namespace,
+                "scope": scope,
                 "model": self.model.name,
                 "repetition": repetition,
                 "runner": _RUNNER_VERSION,

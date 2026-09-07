@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .domain.core import (
     Aggregate,
     BehaviorContract,
+    CaseOutcome,
     Constraint,
     EvaluationCase,
+    OptimizeConfig,
     ReaderQuestion,
     load_artifact,
 )
@@ -18,12 +21,31 @@ from .pipeline.synthesis import parse_contract, split_cases
 
 
 def run() -> list[tuple[str, bool, str]]:
-    checks = [_artifact_check(), _contract_check(), _split_check(), _gate_check()]
+    checks = [_config_check(), _artifact_check(), _contract_check(), _split_check(), _gate_check()]
     return checks
 
 
+def _config_check() -> tuple[str, bool, str]:
+    semantic = OptimizeConfig()
+    gepa = OptimizeConfig(engine="gepa")
+    ok = (
+        semantic.engine == "semantic"
+        and semantic.total_call_budget == 32
+        and semantic.max_metric_calls is None
+        and semantic.max_body_lines("Keep all rules.\n") is None
+        and not semantic.quick
+        and semantic.output_dir is None
+        and OptimizeConfig(quick=True).quick
+        and gepa.total_call_budget == 600
+        and gepa.max_metric_calls == 120
+        and gepa.max_body_lines("First.\nSecond.\n") == 1
+        and not OptimizeConfig(engine="gepa", aggressive_limit=None).aggressive
+    )
+    return "semantic defaults and explicit GEPA legacy profile", ok, ""
+
+
 def _artifact_check() -> tuple[str, bool, str]:
-    with TemporaryDirectory() as directory:
+    with TemporaryDirectory(prefix=".zen-selfcheck-", dir=Path.cwd()) as directory:
         path = Path(directory) / "english.instructions.md"
         source = "---\r\napplyTo: '**/*.py'\r\n---\r\nExplain the result first.\r\n"
         path.write_bytes(source.encode("utf-8"))
@@ -81,9 +103,22 @@ def _split_check() -> tuple[str, bool, str]:
 
 
 def _gate_check() -> tuple[str, bool, str]:
-    baseline = Aggregate(100, 10, 10, 0, 100, 80)
-    candidate = Aggregate(70, 10, 10, 0, 70, 50)
-    accepted = decide(baseline, candidate).accepted
-    regressed = Aggregate(60, 9, 10, 0, 50, 40)
-    rejected = not decide(baseline, regressed).accepted
-    return "quality outranks token reduction", accepted and rejected, ""
+    cases = (
+        CaseOutcome("A", 10, 10, 10, {"quality": 10}, {"what": 10}),
+        CaseOutcome("B", 10, 10, 10, {"quality": 10}, {"what": 10}),
+    )
+    baseline = Aggregate(100, 2, 2, 0, 100, 80, cases)
+    boundary = replace(
+        cases[0], behavior_passes=9, understanding_passes=9,
+        rule_passes={"quality": 9}, reader_passes={"what": 9},
+    )
+    candidate = Aggregate(70, 2, 2, 0, 70, 50, (boundary, cases[1]))
+    ok = decide(baseline, candidate).accepted
+    for field in ("behavior_passes", "understanding_passes"):
+        regressed = replace(candidate, cases=(replace(boundary, **{field: 8}), cases[1]))
+        decision = decide(baseline, regressed)
+        ok = ok and not decision.accepted and not decision.inconclusive
+    critical = decide(baseline, replace(candidate, critical_failures=1))
+    incomplete = decide(baseline, replace(candidate, evidence_errors=("missing trial",)))
+    ok = ok and not critical.accepted and incomplete.inconclusive
+    return "bounded trial-rate quality gates outrank token reduction", ok, ""
