@@ -103,6 +103,7 @@ class RunRecord:
     latency_ms: int
     events: tuple[dict[str, Any], ...] = ()
     error: str = ""
+    trial_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -122,6 +123,7 @@ class BehaviorResult:
     passed: bool
     critical_failure: bool
     checks: tuple[Check, ...]
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,8 @@ class UnderstandingAnswer:
     question: str
     correct: bool
     evidence: str | None
+    response: str = ""
+    feedback: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,7 @@ class UnderstandingResult:
     accuracy: float
     tokens: int
     answers: tuple[UnderstandingAnswer, ...]
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,20 +151,69 @@ class CaseEvaluation:
     understanding: UnderstandingResult
     output_tokens: int
     feedback: str
+    trial: int = 0
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class CaseOutcome:
+    case_id: str
+    trials: int
+    behavior_passes: int
+    understanding_passes: int
+    rule_passes: dict[str, int]
+    reader_passes: dict[str, int]
 
 
 @dataclass(frozen=True)
 class Aggregate:
     artifact_tokens: int
+    # Majority-passing case counts remain diagnostics, not trial-level gate inputs.
     behavior_passes: int
     understanding_passes: int
     critical_failures: int
     median_output_tokens: float
     median_understanding_tokens: float
+    cases: tuple[CaseOutcome, ...] = ()
+    evidence_errors: tuple[str, ...] = ()
+
+    @property
+    def total_trials(self) -> int:
+        return sum(case.trials for case in self.cases)
+
+    @property
+    def behavior_trial_passes(self) -> int:
+        return sum(case.behavior_passes for case in self.cases)
+
+    @property
+    def understanding_trial_passes(self) -> int:
+        return sum(case.understanding_passes for case in self.cases)
+
+    @property
+    def behavior_pass_rate(self) -> float | None:
+        if self.evidence_errors or not self.total_trials:
+            return None
+        return self.behavior_trial_passes / self.total_trials
+
+    @property
+    def understanding_pass_rate(self) -> float | None:
+        if self.evidence_errors or not self.total_trials:
+            return None
+        return self.understanding_trial_passes / self.total_trials
 
     @property
     def communication_tokens(self) -> float:
         return self.artifact_tokens + self.median_output_tokens
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "total_trials": self.total_trials,
+            "behavior_trial_passes": self.behavior_trial_passes,
+            "understanding_trial_passes": self.understanding_trial_passes,
+            "behavior_pass_rate": self.behavior_pass_rate,
+            "understanding_pass_rate": self.understanding_pass_rate,
+        }
 
 
 @dataclass(frozen=True)
@@ -169,6 +223,7 @@ class GateDecision:
     baseline: Aggregate
     candidate: Aggregate
     communication_reduction: float
+    inconclusive: bool = False
 
 
 @dataclass
@@ -225,7 +280,7 @@ QUICK_CATEGORIES = (
     ),
 )
 
-AGGRESSIVE_DEFAULT_MAX_BODY_LINES = 100
+AGGRESSIVE_DEFAULT_PERCENT = 50
 
 
 @dataclass(frozen=True)
@@ -265,17 +320,38 @@ def parse_aggressive_limit(value: str) -> AggressiveLimit:
 
 @dataclass(frozen=True)
 class OptimizeConfig:
-    target_model: str = "gpt-5-mini"
-    strong_model: str = "gpt-5"
-    generator_model: str = "gpt-5-mini"
+    target_model: str = "gpt-5.6-terra"
+    strong_model: str = "gpt-5.6-sol"
+    generator_model: str = "gpt-5.6-luna"
     seed: int = 0
-    max_metric_calls: int = 120
-    total_call_budget: int = 600
+    max_metric_calls: int | None = None
+    total_call_budget: int | None = None
     holdout_repetitions: int = 3
     communication_reduction: float = 0.03
     categories: tuple[CaseCategory, ...] = DEFAULT_CATEGORIES
     split: tuple[int, int, int] | None = None
-    aggressive_limit: AggressiveLimit | None = None
+    aggressive_limit: AggressiveLimit | None | str = "auto"
+
+    compare_concision: bool = False
+    focus: str = "all"
+    engine: str = "semantic"
+    quick: bool = False
+    output_dir: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.engine not in ("semantic", "gepa"):
+            raise ValueError("engine must be semantic or gepa")
+        if self.total_call_budget is None:
+            object.__setattr__(self, "total_call_budget", 32 if self.engine == "semantic" else 600)
+        if self.max_metric_calls is None and self.engine == "gepa":
+            object.__setattr__(self, "max_metric_calls", 120)
+        if self.aggressive_limit == "auto":
+            object.__setattr__(
+                self, "aggressive_limit",
+                AggressiveLimit(percent=AGGRESSIVE_DEFAULT_PERCENT) if self.engine == "gepa" else None,
+            )
+        elif isinstance(self.aggressive_limit, str):
+            raise ValueError("aggressive_limit must be an AggressiveLimit, None, or 'auto'")
 
     @property
     def aggressive(self) -> bool:

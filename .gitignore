@@ -14,17 +14,17 @@ runs/
 **/out/**/
 ref/
 .ruff_cache/
-# Generated next to the prompt they describe. The example ones are committed on
-# purpose (see examples/), everything else is output.
+.pytest_cache/
+# Generated evaluation artifacts are local, including example output.
 *.probes.json
 *.report.md
-!examples/*.probes.json
-!examples/*.report.md
-!examples/out/*.report.md
-# Pre-rebuild tree, kept only because this repo has no history yet
+*.optimized.md
+*.draft.md
+*.optimize.manifest.json
+# Local scratch/archive directories
 .attic/
 AGENTS.md
 *.log
 /video
 .vscode/settings.json
-docs/f150.png
+UNCONFIRMED_ASSUMPTIONS.md

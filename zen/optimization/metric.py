@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import unified_diff
 from typing import Any
+from uuid import uuid4
 
 import dspy
 
@@ -16,6 +18,7 @@ from ..domain.core import (
     count_tokens,
 )
 from ..pipeline.evaluation import Evaluator
+from ..runtime.lm import fresh_calls
 
 _UNUSABLE_RULES = frozenset({"execution", "judge"})
 
@@ -63,8 +66,10 @@ class ZenMetric:
             output_tokens=count_tokens(answer),
             latency_ms=0,
             error="" if answer else "empty answer",
+            trial_id=str(uuid4()),
         )
-        evaluation = self.evaluator.evaluate(self.contract, case, run)
+        with fresh_calls():
+            evaluation = self.evaluator.evaluate(self.contract, case, run)
         baseline = self.baselines[case.id]
         input_reduction = _reduction(
             baseline.instruction_tokens, count_tokens(instructions)
@@ -76,7 +81,7 @@ class ZenMetric:
         # A real artifact rarely satisfies every derived rule, so a hard zero on any
         # critical miss flattens the search space and leaves GEPA no gradient. Only an
         # unusable answer scores zero; every other result is graded.
-        if _unusable(evaluation.behavior, answer):
+        if evaluation.error or evaluation.understanding.error or _unusable(evaluation.behavior, answer):
             score = 0.0
         elif not evaluation.behavior.passed or not evaluation.understanding.passed:
             score = 0.79 * _quality(evaluation)
@@ -86,7 +91,13 @@ class ZenMetric:
         feedback = (
             f"{evaluation.feedback}\n"
             f"- Instruction reduction versus baseline: {input_reduction:.1%}.\n"
-            f"- Output reduction versus baseline: {output_reduction:.1%}."
+            f"- Output reduction versus baseline: {output_reduction:.1%}.\n"
+            "- Changed instructions versus original:\n"
+            + "".join(unified_diff(
+                self.original_instructions.splitlines(keepends=True),
+                instructions.splitlines(keepends=True),
+                fromfile="original", tofile="candidate",
+            ))
         )
         return dspy.Prediction(score=score, feedback=feedback)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from zen.domain.core import ModelResponse
-from zen.runtime.lm import CallBudget, CopilotModel, ResponseCache
+from zen.runtime.lm import CallBudget, CopilotModel, ResponseCache, fresh_calls
 
 
 class _Model(CopilotModel):
@@ -31,3 +31,13 @@ def test_repeated_prompt_gets_its_own_slot_and_replays_without_new_calls(
     assert second.complete("s", "u").text == "bad"
     assert second.complete("s", "u").text == "good"
     assert second.budget.calls == 0
+
+
+def test_fresh_calls_bypass_response_replay_without_changing_prompts(tmp_path: Path) -> None:
+    _Model(ResponseCache(tmp_path), ["cached"]).complete("s", "u")
+    model = _Model(ResponseCache(tmp_path), ["fresh", "another"])
+    with fresh_calls():
+        assert model.complete("s", "u").text == "fresh"
+        assert model.complete("s", "u").text == "another"
+    assert model.budget.calls == 2
+    assert model.complete("s", "u").text == "cached"
